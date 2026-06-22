@@ -1,0 +1,27 @@
+# Large data files and proprietary simulation outputs — not tracked in git
+data/
+no_github/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.env
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model artifacts
+*.pt
+*.pth
+*.pkl
+*.h5
+*.onnx
+
+# OS
+.DS_Store
+Thumbs.db
