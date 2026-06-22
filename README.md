@@ -193,28 +193,55 @@ The model is accurate where data is abundant and the physics are irrelevant (D �
 
 ## Potential Solutions
 
-| Model | Rationale |
-|---|---|
-| **Linear Regression** | Sanity check — confirms the problem is non-linear |
-| **Random Forest** | Strong tabular baseline; interpretable feature importances |
-| **XGBoost** | Often best on tabular regression tasks; fast inference |
-| **LSTM** | Recurrent; naturally exploits the h0→h19 temporal ordering |
-| **GRU** | Lighter recurrent alternative to LSTM; often similar performance |
-| **ANN (baseline)** | Fully-connected 160→256→128→128→64→32→1 |
+| Model | Rationale | Expected Outcome |
+|---|---|---|
+| **Linear Regression** | Baseline only — confirms the problem is non-linear | **Expected to perform poorly.** The traction-separation-damage relationship is highly non-linear; a linear model cannot capture it. High transition-zone MAE, large force-displacement curve error. Useful only to establish a lower bound. |
+| **Random Forest** | Tree-based ensemble; interpretable feature importances | Likely better than ANN on aggregate MSE due to strong tabular fitting, but will still suffer from D≈1 dominance unless sample weighting is applied. Does not exploit the temporal ordering of h0→h19, so transition-zone accuracy may not improve meaningfully. |
+| **XGBoost** | Gradient-boosted trees; often best on raw tabular tasks | Similar to Random Forest. Strong aggregate performance expected, but same structural weakness — no awareness of sequence order, same data imbalance bias without reweighting. Good fast-inference candidate if weighting is added. |
+| **LSTM** | Recurrent model; processes h0→h19 as a true time sequence | Most architecturally appropriate model. Damage evolution is path-dependent and history-driven — LSTM is designed for exactly this. Most likely to improve transition-zone accuracy over the flat ANN, especially if combined with weighted loss. |
+| **GRU** | Lighter recurrent alternative to LSTM | Expected to perform comparably to LSTM with faster training. Good first recurrent model to try before committing to LSTM tuning. |
+| **ANN (baseline)** | Fully-connected 160→256→128→128→64→32→1 | Known result: Val MSE 0.0000383, ~25–30% peak load overestimation in FEA. Benchmark all other models against this. |
 
-### Additional Directions
-- **Hyperparameter optimization:** Optuna or grid search for learning rate, hidden size, depth, dropout.
-- **Feature engineering:** Delta features (Δseparation, Δtraction across history steps), normalized inputs.
-- **Data augmentation:** Oversample mid-damage range to address imbalance.
-- **Physics constraints:** Enforce D monotonicity (D_{t+1} ≥ D_t) as a loss penalty.
+### Critical Additions (Required to Actually Solve the Problem)
+Architecture changes alone will not fix the bias in the transition zone. These must be applied alongside any model:
+
+- **Weighted loss function:** Weight each training sample inversely proportional to how frequently its D range appears in the dataset. Errors in D=0.3–0.6 must penalize the model far more than errors in D=0.95.
+- **Resampling:** Oversample the D=0–0.7 range so the model sees proportionally more transition-zone examples per epoch.
+- **Hyperparameter optimization:** Optuna or grid search on learning rate, hidden size, depth, dropout — applied after the loss/sampling fixes are in place.
+- **Feature engineering:** Delta features (Δseparation, Δtraction across history steps) to make temporal change explicit.
+- **Physics constraint:** Enforce D monotonicity (D_{t+1} ≥ D_t) as a loss penalty — damage cannot heal.
 
 ---
 
 ## Evaluation Metrics
 
+Aggregate MSE alone is insufficient — it is dominated by the D≈1 majority and does not reflect physical accuracy. All models must be evaluated using **stratified MAE by damage bin.**
+
+### Primary: Stratified MAE by Damage Bin
+
+| Bin | Label | Why it matters |
+|---|---|---|
+| D = 0.0 – 0.3 | Initiation | Rarely seen in training; model nearly blind here |
+| D = 0.3 – 0.7 | **Transition / process zone** | **The critical regime.** Controls crack tip stiffness, load redistribution, and crack propagation speed. This is where the baseline fails. |
+| D = 0.7 – 1.0 | Post-peak softening | Important but less dominant on global response |
+| D ≈ 1.0 | Fully failed | Abundant, easy to predict, physically irrelevant to structural response |
+
+**A model that reduces aggregate MSE but worsens transition-zone MAE (D=0.3–0.7) is making the problem worse.**
+
+### Secondary Metrics
+
 | Metric | Purpose |
 |---|---|
-| Validation MSE | Primary — match against baseline 0.0000383 |
-| Validation MAE | Secondary — interpretable error magnitude |
-| Force vs. crack opening fidelity | Physics check — run full FEA with ML-CZM, compare force-displacement curve to CZM ground truth |
-| Inference time per element | Efficiency — must be faster than CZM to be useful |
+| Aggregate Val MSE | Kept for comparability with baseline (0.0000383) — not the primary signal |
+| Aggregate Val MAE | More interpretable than MSE; less sensitive to outliers |
+| Inference time per element | Efficiency — must remain faster than CZM to be deployable |
+
+### Gold Standard (When Feasible)
+
+| Metric | Purpose |
+|---|---|
+| Peak load error % | Scalar derived from force-displacement curve; directly measures the INC 120 overshoot seen in the baseline |
+| Force-displacement curve RMSE | Full physics check — run FEA with ML-CZM embedded and compare entire F-d curve to CZM ground truth |
+| Crack front position error at key increments | Spatial accuracy check at INC 150, 200 — how far off is the predicted delamination front |
+
+The gold-standard metrics require running a full FEA simulation and are expensive. Transition-zone MAE is the cheap proxy that predicts whether the force-displacement curve will be accurate.
