@@ -165,7 +165,33 @@ Input(160) → Dense(256) → Dense(128) → Dense(128) → Dense(64) → Dense(
 
 ---
 
-## Models to Implement and Evaluate
+## The Problem
+
+The baseline ANN achieves a very low validation MSE (3.83×10⁻⁵), which looks excellent on paper. Yet when it is embedded back into the FEA solver and run on a DCB simulation, the global structural response diverges from the true CZM result in two measurable ways:
+
+1. **Peak load overestimation.** The ML-CZM force-displacement curve peaks ~25–30% higher than the CZM curve (~103 N vs ~80 N). The surrogate thinks the interface is tougher than it is.
+2. **Slower crack propagation.** At the same load increment, ML-CZM predicts a shorter delamination front than CZM. The crack is being held back.
+
+These two symptoms have the same root cause.
+
+### Why Low MSE Does Not Guarantee Physical Accuracy
+
+MSE is computed as an average over all samples. Because ~90% of the dataset has D near 1.0 (already fully damaged elements), the loss is dominated by predictions in that regime — where the answer is nearly always "this element is dead." The model learns that regime very well, and the aggregate MSE looks great.
+
+The physically critical samples are the ones where D is actively transitioning — roughly **D ≈ 0.1 to 0.7**. These are the cohesive elements at the crack tip, in the process zone, currently softening. They control:
+- How stiff the interface is at any given moment
+- When each element "breaks" and redistributes load to its neighbors
+- How fast the crack front advances through the structure
+
+These samples are a small fraction of the training data, so even systematic errors there produce negligible MSE penalty. But those same errors, applied at every process-zone element at every time step, **compound across the entire simulation**. A consistent underprediction of D in the transition zone means those elements stay stiffer longer than they should → the structure carries more load than CZM would allow → peak force is overestimated → crack grows more slowly.
+
+### Summary
+
+The model is accurate where data is abundant and the physics are irrelevant (D ≈ 1), and inaccurate where data is sparse and the physics are critical (D ≈ 0–0.7). MSE as a training objective is blind to this distinction. **Fixing the aggregate loss metric does not fix the physical prediction — the error distribution matters more than the error magnitude.**
+
+---
+
+## Potential Solutions
 
 | Model | Rationale |
 |---|---|
