@@ -1,5 +1,6 @@
 # Large data files and proprietary simulation outputs — not tracked in git
-data/
+data/*
+!data/.gitkeep
 no_github/
 
 # Python
