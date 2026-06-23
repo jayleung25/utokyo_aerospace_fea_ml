@@ -350,3 +350,29 @@ Aggregate MSE alone is insufficient — it is dominated by the D≈1 majority an
 | Crack front position error at key increments | Spatial accuracy check at INC 150, 200 — how far off is the predicted delamination front |
 
 The gold-standard metrics require running a full FEA simulation and are expensive. Transition-zone MAE is the cheap proxy that predicts whether the force-displacement curve will be accurate.
+
+---
+
+## Progress Log
+
+### Round 1 — Model Comparison (2026-06-23)
+
+Three models trained and evaluated on the 70k dataset (`notebooks/02_model_comparison.ipynb`).
+
+| Model | Test MSE | vs Professor | Initiation MAE | Transition MAE | Post-peak MAE | Failed MAE |
+|---|---|---|---|---|---|---|
+| Professor baseline (reported) | 3.830e-05 | 1.00× | — | — | — | — |
+| Baseline ANN (Track A) | 3.455e-05 | 0.90× | 0.00290 | 0.00875 | 0.00518 | 0.00269 |
+| Enhanced ANN (Track B) | 3.636e-05 | 0.95× | 0.00413 | **0.00837** | 0.00551 | 0.00283 |
+| LSTM (Track C) | 1.676e-04 | 4.38× | 0.00925 | 0.01545 | 0.00911 | 0.00677 |
+
+**Findings:**
+- Baseline ANN replication matches the professor's architecture and achieves 10% better aggregate MSE on the held-out test set.
+- Enhanced ANN (delta features + inverse-frequency sample weights) achieves the best Transition MAE (0.00837), a 4% improvement over the baseline in the physically critical zone. Aggregate MSE is within 5% of the professor's reported value.
+- LSTM is currently underperforming on all metrics — 4.38× worse aggregate MSE and nearly 2× worse Transition MAE than the baseline. Root cause is likely insufficient training (LSTMs need more epochs and lower learning rates than dense ANNs); architecture is not ruled out.
+
+**Next steps:**
+- Retrain LSTM with more epochs, lower learning rate, and gradient clipping.
+- Apply stronger sample reweighting to increase the transition-zone penalty (D = 0.3–0.7 currently underrepresented).
+- Explore GRU as a lighter recurrent baseline before committing to LSTM tuning.
+- A 4% Transition MAE improvement is insufficient to meaningfully reduce the ~25–30% peak load overestimation observed in FEA; a larger shift in the transition zone is needed.

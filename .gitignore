@@ -23,6 +23,7 @@ venv/
 *.pkl
 *.h5
 *.onnx
+models/saved/
 
 # OS
 .DS_Store
