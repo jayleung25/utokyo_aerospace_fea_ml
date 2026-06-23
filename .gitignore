@@ -1,6 +1,7 @@
 # Large data files and proprietary simulation outputs — not tracked in git
 data/*
 !data/.gitkeep
+data/processed/
 no_github/
 
 # Python
