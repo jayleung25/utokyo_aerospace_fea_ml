@@ -376,3 +376,57 @@ Three models trained and evaluated on the 70k dataset (`notebooks/02_model_compa
 - Apply stronger sample reweighting to increase the transition-zone penalty (D = 0.3–0.7 currently underrepresented).
 - Explore GRU as a lighter recurrent baseline before committing to LSTM tuning.
 - A 4% Transition MAE improvement is insufficient to meaningfully reduce the ~25–30% peak load overestimation observed in FEA; a larger shift in the transition zone is needed.
+
+---
+
+### Round 2 — LSTM Hyperparameter & Architecture Optimization (2026-06-25)
+
+**Changes made to `models/lstm_model.py`, `scripts/train_model.py`, `models/train.py`:**
+
+| Change | Old | New | Rationale |
+|---|---|---|---|
+| Learning rate | 1e-3 | 1e-4 | 1e-3 caused val_loss oscillation; LSTMs are more LR-sensitive than dense ANNs |
+| Gradient clipping | clipnorm=1.0 | clipnorm=0.5 | Tighter bound prevents gradient spikes across 20 BPTT unroll steps |
+| Recurrent dropout | None | 0.1 | Regularises hidden-to-hidden weights; reduces co-adaptation to D≈1.0 majority |
+| LayerNormalization | None | After each LSTM layer | Preferred over BatchNorm for RNNs — normalises per-timestep across features |
+| Dense head | Dense(32)→Dense(1) | Dense(64)→Dense(32)→Dense(1) | More expressive prediction head for combining LSTM features |
+| Max epochs | 300 | 600 | LSTMs need longer convergence; original 300 was insufficient |
+| EarlyStopping patience | 30 | 50 | Gives model more settling time at each LR plateau |
+| ReduceLROnPlateau patience | 10 (hardcoded) | 20 (per-model via `lr_schedule_patience`) | Avoids prematurely halving LR before model recovers from plateaus |
+
+**Results (`notebooks/02_model_comparison.ipynb`):**
+
+| Model | Test MSE | vs Professor | Initiation MAE | Transition MAE | Post-peak MAE | Failed MAE |
+|---|---|---|---|---|---|---|
+| Professor baseline (reported) | 3.830e-05 | 1.00× | — | — | — | — |
+| Baseline ANN (Track A) | 3.455e-05 | 0.90× | 0.00290 | 0.00875 | 0.00518 | 0.00269 |
+| Enhanced ANN (Track B) | 3.636e-05 | 0.95× | 0.00413 | **0.00837** | 0.00551 | 0.00283 |
+| LSTM Round 1 | 1.676e-04 | 4.38× | 0.00925 | 0.01545 | 0.00911 | 0.00677 |
+| **LSTM Round 2** | **5.261e-05** | **1.37×** | 0.00552 | 0.01022 | 0.00592 | 0.00373 |
+
+**Findings:**
+- Test MSE improved **3.19×** (from 1.676e-04 → 5.261e-05). The architectural inductive bias of the LSTM is confirmed valid — the model was simply undertrained and overly regularised in Round 1.
+- Transition MAE improved **34%** (0.01545 → 0.01022), confirming that lower LR and recurrent dropout help the LSTM learn the rate-of-change patterns that distinguish D=0.3–0.7 samples.
+- LSTM trained for all 600 epochs without EarlyStopping triggering, indicating the model had **not yet converged** at the epoch limit. This is the primary bottleneck remaining.
+- Despite improvements, LSTM remains 52% above the baseline ANN target (3.455e-05) and Transition MAE is still 17% above the baseline ANN (0.00875).
+
+**Root cause of remaining gap — two key findings:**
+
+1. **Still converging at epoch 600.** EarlyStopping patience=50 never triggered; best val_loss was at epoch 593 with only 6 subsequent epochs when training hit the max. Extending to 1000 epochs is the lowest-risk next step.
+
+2. **10 of 16 LSTM input features are structural zeros.** From the DCB-only dataset, `modeMixity`, `separT1`, `separT2`, `tractT1`, and `tractT2` are all exactly 0.0 across every sample and every timestep. After StandardScaler and delta computation, these remain zero throughout. In the (N, 20, 16) LSTM input, only 6 features carry any signal:
+
+   | Feature | Absolute index | Delta index |
+   |---|---|---|
+   | `failureIndex` | 0 | 8 |
+   | `separN` | 2 | 10 |
+   | `tractN` | 5 | 13 |
+
+   The remaining 10 feature columns (indices 1, 3, 4, 6, 7, 9, 11, 12, 14, 15) are zero everywhere. The LSTM is spending 62.5% of its input-to-hidden weight capacity on structureless zero inputs, polluting the hidden state and wasting recurrent units.
+
+**Next steps (Round 3):**
+- **Feature selection:** Modify `prepare_inputs()` to select only the 6 meaningful columns `[0, 2, 5, 8, 10, 13]`, reducing LSTM input from (N, 20, 16) → (N, 20, 6). Update `Input(shape=(20, 16))` → `Input(shape=(20, 6))` and compensate by increasing LSTM(128) → LSTM(192).
+- **More epochs:** Increase max epochs from 600 to 1000 and patience from 50 to 75 — the model was not done learning.
+- **Reduce L2:** The training `val_loss` (~4.66e-4) is ~9× larger than the actual test MSE (5.26e-05), meaning L2 regularization is dominating the optimisation objective. Reduce `_L2 = 1e-4` → `_L2 = 5e-5`.
+- **Bidirectional LSTM (Round 3B):** Wrap first LSTM in `Bidirectional` — valid here because the full 20-step history is available at inference (not autoregressive). The backward pass encodes how far a cohesive element is from final failure, which is a physically meaningful signal.
+- **Attention pooling (Round 3C, if still insufficient):** Instead of discarding intermediate LSTM outputs, add attention-weighted pooling over all 20 steps. This allows the model to focus on the timestep where damage initiates rather than relying solely on the final hidden state.

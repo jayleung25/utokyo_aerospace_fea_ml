@@ -63,13 +63,14 @@ MODEL_CONFIGS: dict[str, dict] = {
         "use_lr_schedule": True,
     },
     "lstm": {
-        "build_fn":       lstm_model.build_lstm_model,
-        "prepare_fn":     lstm_model.prepare_inputs,
-        "use_weights":    True,
-        "batch_size":     128,
-        "epochs":         300,
-        "patience":       30,
-        "use_lr_schedule": True,
+        "build_fn":           lstm_model.build_lstm_model,
+        "prepare_fn":         lstm_model.prepare_inputs,
+        "use_weights":        True,
+        "batch_size":         128,
+        "epochs":             600,
+        "patience":           50,
+        "use_lr_schedule":    True,
+        "lr_schedule_patience": 20,
     },
 }
 
@@ -199,6 +200,7 @@ def main() -> None:
         epochs=cfg["epochs"],
         patience=cfg["patience"],
         use_lr_schedule=cfg["use_lr_schedule"],
+        lr_schedule_patience=cfg.get("lr_schedule_patience", 10),
     )
     elapsed = time.perf_counter() - t0
     print(f"\n[train] Total wall time: {elapsed:.1f}s")

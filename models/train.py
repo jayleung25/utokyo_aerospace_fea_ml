@@ -59,24 +59,28 @@ def run_training(
     epochs: int = 200,
     patience: int = 20,
     use_lr_schedule: bool = False,
+    lr_schedule_patience: int = 10,
 ) -> keras.callbacks.History:
     """Fit a model with EarlyStopping, checkpointing, and stratified MAE logging.
 
     Args:
-        model:          Compiled Keras model.
-        X_train:        Training features in the shape expected by this model.
-        y_train:        Training labels (damage D).
-        X_val:          Validation features (same shape as X_train).
-        y_val:          Validation labels.
-        weights_train:  Per-sample loss weights from pipeline/weights.py.
-                        Pass None for the professor-replication baseline.
-        save_dir:       Root directory for saved weights and logs.
-        model_name:     Subdirectory name under save_dir.
-        batch_size:     Mini-batch size.
-        epochs:         Maximum number of training epochs.
-        patience:       EarlyStopping patience (epochs without improvement).
-        use_lr_schedule: If True, adds ReduceLROnPlateau. Disabled for baseline
-                         replication so LR exactly matches the professor's setup.
+        model:                Compiled Keras model.
+        X_train:              Training features in the shape expected by this model.
+        y_train:              Training labels (damage D).
+        X_val:                Validation features (same shape as X_train).
+        y_val:                Validation labels.
+        weights_train:        Per-sample loss weights from pipeline/weights.py.
+                              Pass None for the professor-replication baseline.
+        save_dir:             Root directory for saved weights and logs.
+        model_name:           Subdirectory name under save_dir.
+        batch_size:           Mini-batch size.
+        epochs:               Maximum number of training epochs.
+        patience:             EarlyStopping patience (epochs without improvement).
+        use_lr_schedule:      If True, adds ReduceLROnPlateau. Disabled for baseline
+                              replication so LR exactly matches the professor's setup.
+        lr_schedule_patience: ReduceLROnPlateau patience (epochs before halving LR).
+                              LSTMs need a higher value (20) than dense ANNs (10) to
+                              avoid killing the LR before the model can converge.
 
     Returns:
         Keras History object with full training log.
@@ -110,7 +114,7 @@ def run_training(
             keras.callbacks.ReduceLROnPlateau(
                 monitor="val_loss",
                 factor=0.5,
-                patience=10,
+                patience=lr_schedule_patience,
                 min_lr=1e-6,
                 verbose=1,
             )

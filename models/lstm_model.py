@@ -2,27 +2,29 @@
 
 Input format:  (N, 20, 16) — pipeline output used directly, no reshaping.
 
-Architecture:
+Architecture (Round 2):
     Input(20, 16)
-    → LSTM(128, return_sequences=True) → Dropout(0.2)
-    → LSTM(64,  return_sequences=False) → Dropout(0.2)
-    → Dense(32, relu)
+    → LSTM(128, return_sequences=True, recurrent_dropout=0.1)
+    → LayerNormalization → Dropout(0.2)
+    → LSTM(64,  return_sequences=False, recurrent_dropout=0.1)
+    → LayerNormalization → Dropout(0.2)
+    → Dense(64, relu) → Dense(32, relu)
     → Dense(1, sigmoid)
 
-Why LSTM is the strongest candidate to outperform the flat ANN:
-  CZM damage is irreversible and path-dependent — once the interface
-  softens, it cannot recover. An LSTM hidden state carries this loading
-  history explicitly through each of the 20 timesteps, applying an
-  inductive bias that matches the physics. The flat ANN, by contrast,
-  must learn the same sequential relationships from a single 320-dimensional
-  vector with no built-in notion of order.
+Round 2 changes vs Round 1:
+  - LR 1e-3 → 1e-4: LSTMs need a lower LR than dense ANNs; 1e-3 caused
+    val_loss oscillation that stalled convergence at epoch 300.
+  - clipnorm 1.0 → 0.5: tighter bound prevents gradient spikes across
+    20 unrolled BPTT steps.
+  - recurrent_dropout=0.1: regularises the recurrent kernel independently
+    of the output dropout; reduces co-adaptation to the D≈1.0 majority.
+  - LayerNormalization: preferred over BatchNorm for RNNs (normalises
+    across the feature axis per timestep, not across the batch axis).
+  - Dense(32) → Dense(64)→Dense(32): extra capacity in the prediction
+    head lets the LSTM features combine more expressively before output.
 
-  The transition zone (D = 0.3–0.7) is where the LSTM advantage is
-  largest: damage initiation depends on the rate of loading change
-  (ΔseparN, ΔfailureIndex), which the recurrent hidden state naturally
-  encodes without needing explicit delta features.
-
-Same sample weights, optimizer, and LR schedule as Track B.
+Same sample weights and LR schedule as Track B (patience raised in
+train_model.py to give each LR level more time to converge).
 """
 
 from __future__ import annotations
@@ -35,26 +37,36 @@ _L2 = 1e-4
 
 
 def build_lstm_model() -> keras.Model:
-    """Build and compile the stacked LSTM model."""
+    """Build and compile the stacked LSTM model (Round 2 config)."""
     model = keras.Sequential(
         [
             keras.layers.Input(shape=(20, 16), name="input"),
             keras.layers.LSTM(
                 128,
                 return_sequences=True,
+                recurrent_dropout=0.1,
                 kernel_regularizer=keras.regularizers.l2(_L2),
                 recurrent_regularizer=keras.regularizers.l2(_L2),
                 name="lstm_128",
             ),
+            keras.layers.LayerNormalization(name="ln_128"),
             keras.layers.Dropout(0.2, name="drop_128"),
             keras.layers.LSTM(
                 64,
                 return_sequences=False,
+                recurrent_dropout=0.1,
                 kernel_regularizer=keras.regularizers.l2(_L2),
                 recurrent_regularizer=keras.regularizers.l2(_L2),
                 name="lstm_64",
             ),
+            keras.layers.LayerNormalization(name="ln_64"),
             keras.layers.Dropout(0.2, name="drop_64"),
+            keras.layers.Dense(
+                64,
+                activation="relu",
+                kernel_regularizer=keras.regularizers.l2(_L2),
+                name="dense_64",
+            ),
             keras.layers.Dense(
                 32,
                 activation="relu",
@@ -67,11 +79,11 @@ def build_lstm_model() -> keras.Model:
     )
 
     optimizer = keras.optimizers.Adam(
-        learning_rate=1e-3,
+        learning_rate=1e-4,
         beta_1=0.9,
         beta_2=0.999,
         epsilon=1e-8,
-        clipnorm=1.0,
+        clipnorm=0.5,
     )
     model.compile(optimizer=optimizer, loss="mse", metrics=["mae"])
     return model
