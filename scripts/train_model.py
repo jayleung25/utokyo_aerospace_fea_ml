@@ -29,6 +29,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.train import run_training
 from models import baseline_ann, enhanced_ann, lstm_model
+from models.lstm_model import (
+    build_lstm_model_r3,
+    build_lstm_model_r4,
+    build_lstm_model_r5,
+)
 from pipeline import config
 
 # ---------------------------------------------------------------------------
@@ -71,6 +76,39 @@ MODEL_CONFIGS: dict[str, dict] = {
         "patience":           50,
         "use_lr_schedule":    True,
         "lr_schedule_patience": 20,
+    },
+    # Round 3: feature selection (16→6), scaled units, lower L2, full convergence
+    "lstm_r3": {
+        "build_fn":             build_lstm_model_r3,
+        "prepare_fn":           lstm_model.prepare_inputs,
+        "use_weights":          True,
+        "batch_size":           256,
+        "epochs":               1000,
+        "patience":             80,
+        "use_lr_schedule":      True,
+        "lr_schedule_patience": 25,
+    },
+    # Round 4: Bidirectional LSTM + attention pooling (stack on R3)
+    "lstm_r4": {
+        "build_fn":             build_lstm_model_r4,
+        "prepare_fn":           lstm_model.prepare_inputs,
+        "use_weights":          True,
+        "batch_size":           256,
+        "epochs":               1200,
+        "patience":             100,
+        "use_lr_schedule":      True,
+        "lr_schedule_patience": 30,
+    },
+    # Round 5: R4 architecture + Huber loss for transition-zone precision
+    "lstm_r5": {
+        "build_fn":             build_lstm_model_r5,
+        "prepare_fn":           lstm_model.prepare_inputs,
+        "use_weights":          True,
+        "batch_size":           256,
+        "epochs":               1200,
+        "patience":             100,
+        "use_lr_schedule":      True,
+        "lr_schedule_patience": 30,
     },
 }
 

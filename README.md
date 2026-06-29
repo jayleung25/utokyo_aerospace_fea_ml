@@ -430,3 +430,49 @@ Three models trained and evaluated on the 70k dataset (`notebooks/02_model_compa
 - **Reduce L2:** The training `val_loss` (~4.66e-4) is ~9× larger than the actual test MSE (5.26e-05), meaning L2 regularization is dominating the optimisation objective. Reduce `_L2 = 1e-4` → `_L2 = 5e-5`.
 - **Bidirectional LSTM (Round 3B):** Wrap first LSTM in `Bidirectional` — valid here because the full 20-step history is available at inference (not autoregressive). The backward pass encodes how far a cohesive element is from final failure, which is a physically meaningful signal.
 - **Attention pooling (Round 3C, if still insufficient):** Instead of discarding intermediate LSTM outputs, add attention-weighted pooling over all 20 steps. This allows the model to focus on the timestep where damage initiates rather than relying solely on the final hidden state.
+
+---
+
+### Round 3 — LSTM Feature Selection, Bidirectional Architecture, and Attention (2026-06-29)
+
+Three new LSTM variants trained in one sequential run via `scripts/train_rounds.py`. All build functions added to `models/lstm_model.py`; training configs added to `scripts/train_model.py`.
+
+**Architecture changes per round:**
+
+| Round | Key Changes vs Prior |
+|---|---|
+| **lstm_r3** | Lambda feature-select layer (16→6 live features); LSTM(128→192, 64→96); L2 1e-4→5e-5; Dropout 0.2→0.15; Functional API (replaces Sequential); epochs 600→1000, patience 50→80 |
+| **lstm_r4** | Bidirectional(LSTM(128)) on first layer → (N,20,256); second LSTM(96, return_sequences=True); custom AttentionPooling over all 20 steps; explicit `mse` metric tracked; epochs 1000→1200, patience 80→100 |
+| **lstm_r5** | Same architecture as R4; Huber loss (delta=0.05) replaces MSE to de-emphasise large errors in fully-failed zone |
+
+**Results:**
+
+| Model | Test MSE | vs Professor | Initiation MAE | Transition MAE | Post-peak MAE | Failed MAE |
+|---|---|---|---|---|---|---|
+| Professor baseline (reported) | 3.830e-05 | 1.00× | — | — | — | — |
+| Baseline ANN (Track A) | 3.455e-05 | 0.90× | 0.00290 | 0.00875 | 0.00518 | 0.00269 |
+| Enhanced ANN (Track B) | 3.636e-05 | 0.95× | 0.00413 | **0.00837** | 0.00551 | 0.00283 |
+| LSTM Round 2 | 5.261e-05 | 1.37× | 0.00552 | 0.01022 | 0.00592 | 0.00373 |
+| LSTM Round 3 (feat. select) | 4.763e-05 | 1.24× | 0.00576 | 0.00986 | 0.00457 | 0.00371 |
+| **LSTM Round 4 (BiLSTM+attn)** | **3.634e-05** | **0.95×** | 0.00518 | **0.00840** | **0.00491** | 0.00274 |
+| LSTM Round 5 (Huber loss) | 6.101e-05 | 1.59× | 0.00734 | 0.01114 | 0.00599 | 0.00351 |
+
+**Findings:**
+
+- **LSTM Round 4 beats the professor's benchmark** (3.634e-05 vs 3.83e-05, 0.95×) and nearly matches the Enhanced ANN on both aggregate MSE and Transition MAE (0.00840 vs 0.00837). This is the first LSTM to outperform the professor.
+- **Bidirectional LSTM + attention was the decisive change.** Feature selection alone (R3) reduced MSE by only 9% from R2. Adding BiLSTM and attention (R4) cut it by another 24%, suggesting that using the full 20-step context in both directions — and learning which timestep to weight — provides qualitatively different information than better-regularised forward LSTM.
+- **Huber loss (R5) hurt across all metrics.** Transition MAE regressed from 0.00840 (R4) to 0.01114 (R5) — 33% worse. The Huber gradient in the softening/failed zone is linear rather than quadratic, reducing the penalty on partially-damaged elements and causing the model to under-predict damage there. The `delta=0.05` threshold was too large for this problem.
+- **None of the three rounds converged by their epoch limits.** Training logs show all three hit max epochs (999, 1199, 1199) without EarlyStopping firing. R4's `val_mse` improved from 4.09e-05 at epoch 1170 to 3.95e-05 at epoch 1199 — still improving at termination.
+- **EarlyStopping is monitoring the wrong metric for R4/R5.** Because R4/R5 compile with explicit `metrics=["mse", "mae"]`, the training log separates `val_loss` (MSE + L2 regularization) from `val_mse` (pure MSE). EarlyStopping monitors `val_loss`, which is dominated by the L2 penalty (≈10× the pure MSE). As a result, EarlyStopping fires on L2 noise rather than true predictive improvement, making it an unreliable stopping signal.
+- **R4 initiation MAE (0.00518) is 79% worse than baseline ANN (0.00290).** The BiLSTM+attention architecture correctly improves the transition zone but regresses on initiation. Elements with D < 0.3 are genuinely rare and the attention mechanism may be down-weighting their signal in the sequence.
+
+**Remaining performance gap:**
+
+R4's Transition MAE (0.00840) is within 0.3% of the Enhanced ANN (0.00837) — an effectively tied result. To meaningfully reduce FEA peak-load overestimation, the target should be at least 10–15% below the enhanced ANN, i.e., Transition MAE < 0.0073.
+
+**Next steps (Round 4+):**
+- **Fix EarlyStopping to monitor `val_mse`** for R4/R5 — change `monitor="val_loss"` → `monitor="val_mse"` in `run_training()` when an explicit mse metric is available, so stopping is based on true predictive accuracy.
+- **Extend R4 training** to epochs=2000 with patience=150 — the model improved at every epoch and the current limit is purely a compute constraint.
+- **Rethink transition-zone loss shaping.** Huber with delta=0.05 failed. Consider instead a custom `weighted_mse` loss that applies an additional 5–10× multiplier specifically within D=0.3–0.7 on top of the existing inverse-frequency sample weights. This is additive rather than structural and would not change the gradient form.
+- **Address initiation zone regression.** R4 is 79% worse than baseline ANN on initiation MAE. Consider adding a separate lightweight branch that learns the initiation onset (binary: `failureIndex > 1.0` or not) and gates the main network output.
+- **Data expansion is the structural ceiling.** DCB-only data limits all models to Mode I generalization. Adding ENF and MMB simulation runs is the single highest-impact intervention for FEA deployment accuracy.
