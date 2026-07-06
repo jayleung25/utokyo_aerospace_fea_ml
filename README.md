@@ -476,3 +476,59 @@ R4's Transition MAE (0.00840) is within 0.3% of the Enhanced ANN (0.00837) — a
 - **Rethink transition-zone loss shaping.** Huber with delta=0.05 failed. Consider instead a custom `weighted_mse` loss that applies an additional 5–10× multiplier specifically within D=0.3–0.7 on top of the existing inverse-frequency sample weights. This is additive rather than structural and would not change the gradient form.
 - **Address initiation zone regression.** R4 is 79% worse than baseline ANN on initiation MAE. Consider adding a separate lightweight branch that learns the initiation onset (binary: `failureIndex > 1.0` or not) and gates the main network output.
 - **Data expansion is the structural ceiling.** DCB-only data limits all models to Mode I generalization. Adding ENF and MMB simulation runs is the single highest-impact intervention for FEA deployment accuracy.
+
+---
+
+### Round 4 — Enhanced ANN R2: Transition-Zone Loss + EarlyStopping Fix (2026-07-06)
+
+**Motivation:** Enhanced ANN and LSTM R4 were statistically tied on all metrics despite very different architectures. The common bottleneck was identified as two compounding issues: (1) plain MSE loss dominated by the 68.8% failed-zone majority, giving the transition zone only ~1.45× more total gradient weight than the failed zone despite 14.8× sample weights; and (2) EarlyStopping monitoring `val_loss` (MSE + L2 regularization noise) rather than pure `val_mse`, causing premature stopping and LR decay on regularization artifacts.
+
+**Changes made:**
+
+| File | Change |
+|---|---|
+| `models/enhanced_ann_r2.py` | **New file.** Custom `transition_weighted_mse` loss: 3× multiplier for D ∈ [0.3, 0.7), combined with existing 14.8× sample weights → ~44× total gradient weight for transition zone vs failed zone. Explicit `metrics=["mse", "mae"]` exposes `val_mse` for callbacks. |
+| `models/train.py` | Added `early_stopping_monitor` parameter (default `"val_loss"` — backward compatible). EarlyStopping, ModelCheckpoint, and ReduceLROnPlateau all now use this parameter. Final summary auto-selects `val_mse` when available for professor-comparable reporting. |
+| `scripts/train_model.py` | Added `enhanced_r2` config: 500 epochs, patience 60, `early_stopping_monitor="val_mse"`, `lr_schedule_patience=15`. |
+| `notebooks/02_model_comparison.ipynb` | Added `enhanced_r2` to imports, `MODEL_COLORS`, `MODEL_LABELS`, and model loading loop. |
+
+**Results (`notebooks/02_model_comparison.ipynb`):**
+
+| Model | Test MSE | vs Professor | Initiation MAE | Transition MAE | Post-peak MAE | Failed MAE |
+|---|---|---|---|---|---|---|
+| Professor baseline (reported) | 3.830e-05 | 1.00× | — | — | — | — |
+| Baseline ANN (Track A) | 3.455e-05 | 0.90× | 0.00290 | 0.00875 | 0.00518 | 0.00269 |
+| Enhanced ANN (Track B) | 3.636e-05 | 0.95× | 0.00413 | 0.00837 | 0.00551 | 0.00283 |
+| LSTM Round 4 (BiLSTM+attn) | 3.634e-05 | 0.95× | 0.00518 | 0.00840 | 0.00491 | 0.00274 |
+| **Enhanced ANN R2 (this round)** | **2.059e-05** | **0.54×** | 0.00433 | **0.00684** | **0.00440** | **0.00151** |
+
+**Peak traction overestimation (Plot 6 — element-level FEA proxy):**
+
+| Model | Peak Traction | Overestimation |
+|---|---|---|
+| CZM true | 29.857 MPa | — |
+| Baseline ANN | 30.120 MPa | +0.9% |
+| Enhanced ANN | 30.234 MPa | +1.3% |
+| **Enhanced ANN R2** | **29.922 MPa** | **+0.2%** |
+| LSTM Round 4 | 31.414 MPa | +5.2% |
+
+**Findings:**
+
+- **Enhanced ANN R2 is the new best model on every metric except initiation MAE.** Test MSE of 2.059e-05 is 46% better than the professor's baseline and 40% better than any prior model. The transition-zone weighted loss drove this improvement.
+- **Transition MAE target achieved.** 0.00684 clears the 0.0073 target (18.3% improvement over Enhanced ANN). This is the metric most directly correlated with FEA peak-load accuracy.
+- **Element-level peak traction overestimation is nearly eliminated (+0.2%)**, down from +1.3% on Enhanced ANN and +0.9% on Baseline ANN. This is the element-level proxy for the ~25–30% full-simulation peak load error; the actual FEA embedding improvement requires a full Abaqus run to quantify.
+- **Failed-zone MAE improved 47%** (0.00151 vs 0.00283). The 3× transition-zone loss weight, stacked on existing inverse-frequency sample weights, appears to have redistributed capacity throughout the network rather than simply trading failed-zone accuracy for transition-zone accuracy.
+- **Initiation MAE regressed slightly (+5%)**: 0.00433 vs Enhanced ANN's 0.00413. Initiation-zone samples (D < 0.3) are not directly targeted by the transition loss weight and remain the hardest bin to predict.
+- **The EarlyStopping fix allowed proper convergence.** By monitoring `val_mse` instead of `val_loss`, LR reduction and stopping now respond to true predictive accuracy rather than L2 regularization noise.
+
+**Remaining gaps:**
+
+- Initiation MAE (0.00433) is still 49% above the Baseline ANN (0.00290). A dedicated initiation-zone loss weight or gating mechanism would address this.
+- The +0.2% element-level peak traction result still needs validation via a full Abaqus FEA embedding.
+- DCB-only data remains the structural ceiling for all models.
+
+**Next steps:**
+- Run full Abaqus FEA simulation with Enhanced ANN R2 embedded to measure actual force-displacement curve error and peak load overestimation.
+- Apply the same `early_stopping_monitor="val_mse"` fix to LSTM R4 and extend to 2000 epochs to see if convergence improvement closes the gap with Enhanced ANN R2.
+- Consider an initiation-zone loss weight (e.g., 2× for D < 0.3) stacked on the transition-zone weight to address the remaining initiation regression.
+- **Data expansion** (ENF + MMB) remains the highest-impact long-term intervention.

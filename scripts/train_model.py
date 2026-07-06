@@ -28,7 +28,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.train import run_training
-from models import baseline_ann, enhanced_ann, lstm_model
+from models import baseline_ann, enhanced_ann, enhanced_ann_r2, lstm_model
 from models.lstm_model import (
     build_lstm_model_r3,
     build_lstm_model_r4,
@@ -66,6 +66,18 @@ MODEL_CONFIGS: dict[str, dict] = {
         "epochs":         300,
         "patience":       30,
         "use_lr_schedule": True,
+    },
+    # Round 2: transition-zone weighted loss (3×) + val_mse EarlyStopping
+    "enhanced_r2": {
+        "build_fn":               enhanced_ann_r2.build_enhanced_ann_r2,
+        "prepare_fn":             enhanced_ann_r2.prepare_inputs,
+        "use_weights":            True,
+        "batch_size":             256,
+        "epochs":                 500,
+        "patience":               60,
+        "use_lr_schedule":        True,
+        "lr_schedule_patience":   15,
+        "early_stopping_monitor": "val_mse",
     },
     "lstm": {
         "build_fn":           lstm_model.build_lstm_model,
@@ -239,6 +251,7 @@ def main() -> None:
         patience=cfg["patience"],
         use_lr_schedule=cfg["use_lr_schedule"],
         lr_schedule_patience=cfg.get("lr_schedule_patience", 10),
+        early_stopping_monitor=cfg.get("early_stopping_monitor", "val_loss"),
     )
     elapsed = time.perf_counter() - t0
     print(f"\n[train] Total wall time: {elapsed:.1f}s")

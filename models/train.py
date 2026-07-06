@@ -60,27 +60,33 @@ def run_training(
     patience: int = 20,
     use_lr_schedule: bool = False,
     lr_schedule_patience: int = 10,
+    early_stopping_monitor: str = "val_loss",
 ) -> keras.callbacks.History:
     """Fit a model with EarlyStopping, checkpointing, and stratified MAE logging.
 
     Args:
-        model:                Compiled Keras model.
-        X_train:              Training features in the shape expected by this model.
-        y_train:              Training labels (damage D).
-        X_val:                Validation features (same shape as X_train).
-        y_val:                Validation labels.
-        weights_train:        Per-sample loss weights from pipeline/weights.py.
-                              Pass None for the professor-replication baseline.
-        save_dir:             Root directory for saved weights and logs.
-        model_name:           Subdirectory name under save_dir.
-        batch_size:           Mini-batch size.
-        epochs:               Maximum number of training epochs.
-        patience:             EarlyStopping patience (epochs without improvement).
-        use_lr_schedule:      If True, adds ReduceLROnPlateau. Disabled for baseline
-                              replication so LR exactly matches the professor's setup.
-        lr_schedule_patience: ReduceLROnPlateau patience (epochs before halving LR).
-                              LSTMs need a higher value (20) than dense ANNs (10) to
-                              avoid killing the LR before the model can converge.
+        model:                  Compiled Keras model.
+        X_train:                Training features in the shape expected by this model.
+        y_train:                Training labels (damage D).
+        X_val:                  Validation features (same shape as X_train).
+        y_val:                  Validation labels.
+        weights_train:          Per-sample loss weights from pipeline/weights.py.
+                                Pass None for the professor-replication baseline.
+        save_dir:               Root directory for saved weights and logs.
+        model_name:             Subdirectory name under save_dir.
+        batch_size:             Mini-batch size.
+        epochs:                 Maximum number of training epochs.
+        patience:               EarlyStopping patience (epochs without improvement).
+        use_lr_schedule:        If True, adds ReduceLROnPlateau. Disabled for baseline
+                                replication so LR exactly matches the professor's setup.
+        lr_schedule_patience:   ReduceLROnPlateau patience (epochs before halving LR).
+                                LSTMs need a higher value (20) than dense ANNs (10) to
+                                avoid killing the LR before the model can converge.
+        early_stopping_monitor: Metric for EarlyStopping and ReduceLROnPlateau.
+                                Use "val_mse" for models with a custom loss + explicit
+                                mse metric, so callbacks track pure MSE rather than
+                                val_loss (custom loss + L2 noise). Default "val_loss"
+                                preserves behaviour for baseline and LSTM rounds.
 
     Returns:
         Keras History object with full training log.
@@ -90,14 +96,14 @@ def run_training(
 
     callbacks: list[keras.callbacks.Callback] = [
         keras.callbacks.EarlyStopping(
-            monitor="val_loss",
+            monitor=early_stopping_monitor,
             patience=patience,
             restore_best_weights=True,
             verbose=1,
         ),
         keras.callbacks.ModelCheckpoint(
             filepath=os.path.join(out_dir, "best_model.weights.h5"),
-            monitor="val_loss",
+            monitor=early_stopping_monitor,
             save_best_only=True,
             save_weights_only=True,
             verbose=0,
@@ -112,7 +118,7 @@ def run_training(
     if use_lr_schedule:
         callbacks.append(
             keras.callbacks.ReduceLROnPlateau(
-                monitor="val_loss",
+                monitor=early_stopping_monitor,
                 factor=0.5,
                 patience=lr_schedule_patience,
                 min_lr=1e-6,
@@ -131,8 +137,12 @@ def run_training(
         verbose=1,
     )
 
-    best_val_mse = min(history.history["val_loss"])
-    print(f"\n[train] {model_name} — best val MSE: {best_val_mse:.6e}")
+    # Use val_mse when available (pure MSE, comparable to professor baseline).
+    # Fall back to val_loss for models without explicit mse metric.
+    mse_key = "val_mse" if "val_mse" in history.history else "val_loss"
+    best_val_mse = min(history.history[mse_key])
+    label = "val_mse" if mse_key == "val_mse" else "val_loss≈mse"
+    print(f"\n[train] {model_name} — best {label}: {best_val_mse:.6e}")
     print(f"[train] Professor baseline: 3.83e-05")
     ratio = best_val_mse / 3.83e-5
     if ratio < 1.0:
