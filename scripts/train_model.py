@@ -28,7 +28,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.train import run_training
-from models import baseline_ann, enhanced_ann, enhanced_ann_r2, lstm_model
+from models import baseline_ann, enhanced_ann, enhanced_ann_r2, enhanced_ann_r3, lstm_model
 from models.lstm_model import (
     build_lstm_model_r3,
     build_lstm_model_r4,
@@ -71,6 +71,18 @@ MODEL_CONFIGS: dict[str, dict] = {
     "enhanced_r2": {
         "build_fn":               enhanced_ann_r2.build_enhanced_ann_r2,
         "prepare_fn":             enhanced_ann_r2.prepare_inputs,
+        "use_weights":            True,
+        "batch_size":             256,
+        "epochs":                 500,
+        "patience":               60,
+        "use_lr_schedule":        True,
+        "lr_schedule_patience":   15,
+        "early_stopping_monitor": "val_mse",
+    },
+    # Round 3: initiation-zone loss weight (2×) + monotonicity penalty
+    "enhanced_r3": {
+        "build_fn":               enhanced_ann_r3.build_enhanced_ann_r3,
+        "prepare_fn":             enhanced_ann_r3.prepare_inputs,
         "use_weights":            True,
         "batch_size":             256,
         "epochs":                 500,

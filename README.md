@@ -532,3 +532,57 @@ R4's Transition MAE (0.00840) is within 0.3% of the Enhanced ANN (0.00837) — a
 - Apply the same `early_stopping_monitor="val_mse"` fix to LSTM R4 and extend to 2000 epochs to see if convergence improvement closes the gap with Enhanced ANN R2.
 - Consider an initiation-zone loss weight (e.g., 2× for D < 0.3) stacked on the transition-zone weight to address the remaining initiation regression.
 - **Data expansion** (ENF + MMB) remains the highest-impact long-term intervention.
+
+---
+
+### Round 5 — Enhanced ANN R3: Initiation-Zone Weight + Monotonicity Penalty (2026-07-07)
+
+**Motivation:** Enhanced ANN R2 was the best model on every metric except Initiation MAE (D < 0.3), which regressed 49% vs the plain baseline ANN (0.00433 vs 0.00290) — the same regression pattern also appeared in LSTM R4 (+79%), flagged across three rounds without a fix. Separately, the README's "Critical Additions" list has called for a D-monotonicity physics constraint (damage cannot heal) since Round 1, and it had never been implemented in any model. Both are addressed here, isolated to the loss function only — architecture, LR, L2, and dropout are identical to R2 — so any change in results is attributable to the loss change alone.
+
+**Changes made (`models/enhanced_ann_r3.py`, new file):**
+
+| Change | Detail |
+|---|---|
+| Initiation-zone loss weight | `physics_weighted_mse` adds a 2× multiplier for D < 0.3, stacked on R2's existing 3× transition-zone (D∈[0.3,0.7)) multiplier. Zones don't overlap, so no double-counting. |
+| Monotonicity penalty | The dataset has no trajectory/element ID column, so true consecutive timesteps of the same simulation can't be paired to enforce `D_{t+1} ≥ D_t` directly. Instead, a `MonotonicityPenalty` layer applies a pairwise soft-monotonicity hinge **within each training batch**, using the current-step `failureIndex` (corr. 0.50 with D — the strongest live feature) as an ordering proxy: for any pair of samples where `failureIndex_i > failureIndex_j`, the model is penalized if `D_pred_i < D_pred_j`. Wired via `model.add_loss()` so it participates in autodiff without touching the sample-weighted main loss or the explicit `mse` metric used for EarlyStopping. Weight (`1e-3`) tuned to stay a gentle regularizer — verified at ~7e-6 initial contribution, comparable to the ~1e-5 MSE scale, not dominant like the L2 issue Round 4 fixed. |
+| Tests | `tests/test_models.py` (new) — 13 unit tests covering the zone-weighted loss, the monotonicity penalty's behavior (no penalty when monotonic, positive when inverted, scales linearly with weight), and model build/fit smoke tests. First model-level test coverage in the repo (previously only the data pipeline was tested). |
+| CLI / notebook wiring | Added `enhanced_r3` config to `scripts/train_model.py` (500 epochs, patience 60, `val_mse` monitor, matching R2). Added to `notebooks/02_model_comparison.ipynb` imports, color/label maps, and model-loading loop. |
+
+**Results (`notebooks/02_model_comparison.ipynb`, test set):**
+
+| Model | Test MSE | vs Professor | Initiation MAE | Transition MAE | Post-peak MAE | Failed MAE |
+|---|---|---|---|---|---|---|
+| Professor baseline (reported) | 3.830e-05 | 1.00× | — | — | — | — |
+| Baseline ANN (Track A) | 3.455e-05 | 0.90× | 0.00290 | 0.00875 | 0.00518 | 0.00269 |
+| Enhanced ANN (Track B) | 3.636e-05 | 0.95× | 0.00413 | 0.00837 | 0.00551 | 0.00283 |
+| Enhanced ANN R2 (transition loss) | **2.059e-05** | **0.54×** | 0.00433 | **0.00684** | 0.00440 | 0.00151 |
+| **Enhanced ANN R3 (this round)** | 2.252e-05 | 0.59× | **0.00322** | 0.00748 | **0.00427** | **0.00137** |
+
+**Peak traction overestimation (element-level FEA proxy):**
+
+| Model | Peak Traction | Overestimation |
+|---|---|---|
+| CZM true | 29.857 MPa | — |
+| Baseline ANN | 30.120 MPa | +0.9% |
+| Enhanced ANN R2 | 29.922 MPa | +0.2% |
+| **Enhanced ANN R3** | 30.070 MPa | +0.7% |
+| LSTM Round 4 | 31.414 MPa | +5.2% |
+
+**Training behavior:** EarlyStopping (`val_mse`, patience 60) fired at epoch 398, restoring weights from epoch 338 (best val_mse 1.886e-05), with the LR schedule already decayed to its `min_lr` floor (1e-6) — a genuine convergence, unlike LSTM R4 which still hadn't triggered EarlyStopping at its epoch cap. Wall time: 1719s (~29 min).
+
+**Findings — an honest tradeoff, not a clean win:**
+
+- **The initiation-zone regression is essentially fixed.** 0.00322 is within 11% of the baseline ANN (0.00290), down from R2's 49%-worse 0.00433.
+- **But R2 remains the better model on the metrics that matter most for this project's actual goal.** Transition MAE — the README's own stated primary signal — got 9% *worse* (0.00684 → 0.00748), moving back above the 0.0073 target R2 had cleared. Peak traction overestimation also regressed (+0.2% → +0.7%). By the README's own litmus test ("a model that reduces aggregate MSE but worsens transition-zone MAE is making the problem worse"), R3 is a step backward on the metric this project exists to fix, despite genuinely fixing a real, previously-flagged problem.
+- **Why this is a mechanical tradeoff, not a tuning failure:** `physics_weighted_mse` uses multiplicative zone weights on a single scalar loss, stacked on mean-normalized sample weights. Boosting the initiation zone's weight doesn't add gradient budget — it reallocates it away from the transition zone, since the weights re-normalize to mean 1. The two zones compete for a fixed pool inside one loss function, so this design can't fix initiation without taxing transition. **R2 and R3 sit at different points on the same tradeoff curve, not on a Pareto improvement.**
+- **Open question — is the 0.00684 vs 0.00748 gap even real?** The transition zone is only ~473 validation samples (6.76% of data per the original EDA). A 9% relative MAE difference on a bin that small is well within the range a single stratified split could produce from sampling variance alone. This hasn't been checked yet (see Next steps).
+
+**Decision:** Enhanced ANN R2 remains the leading candidate for deployment. R3 is retained as a documented exploration of the initiation/transition tradeoff frontier, not a replacement for R2.
+
+**Next steps:**
+- **Validate whether the R2-vs-R3 transition MAE gap is statistically real before treating it as a finding.** Cheapest path: bootstrap-resample the existing test-set predictions from both models (~1000 resamples) and check whether the confidence interval on the MAE difference straddles zero. Only escalate to a real k-fold retrain (expensive here — 30 min to hours per model) once down to 2-3 finalist candidates.
+- **Escape the zero-sum tradeoff structurally** instead of re-tuning zone multipliers: implement the gated/two-head architecture the README has proposed since Round 3 — a small branch that learns initiation onset and blends with the main prediction, so initiation accuracy doesn't have to compete with transition zone inside one scalar loss.
+- Quick cheaper check: try a smaller initiation multiplier (1.5× instead of 2×) to see if most of the initiation gain is recoverable at a smaller transition-zone cost — this only moves along the existing tradeoff curve, so treat it as a stopgap, not a fix.
+- **Hyperparameter search via Optuna** — every round to date (R1–R5) has been hand-tuned one change at a time. A short sweep over loss weights, L2, dropout, and LR on the current best candidate(s) would likely beat further manual iteration.
+- **Finish the deployment path** — `cpp/inference/czm_surrogate.cpp` is still fully stubbed (every TF C API call is a TODO). No model has ever been exported to a SavedModel, so the actual Abaqus embedding is not yet functional; all peak-traction numbers to date are an element-level proxy, not a real FEA run.
+- **Data expansion** (ENF + MMB) remains the highest-impact long-term intervention and the structural ceiling for every model above.
